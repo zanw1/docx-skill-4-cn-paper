@@ -19,6 +19,7 @@ A .docx file is a ZIP archive containing XML files.
 | Edit existing document | Unpack → edit XML → repack - see Editing Existing Documents below |
 | Insert 三线表 (XML editing) | `python scripts/table.py unpacked/ "1-1" "标题" --headers … --rows …` |
 | Insert block formula (XML editing) | `python scripts/formula.py unpacked/ "LaTeX" 1 --anchor "锚文本"` |
+| 双栏论文中的通栏图片＋图题 | 连续分节实现 2 → 1 → 2 栏；见下方“通栏图片”章节与 `scripts/new_doc.js` 的 `columnSection()` |
 
 ### Converting .doc to .docx
 
@@ -141,7 +142,7 @@ node scripts/new_doc.js
 # Change OUTPUT_PATH inside the script if needed.
 ```
 
-`scripts/new_doc.js` provides ready-to-use helper functions: `h1/h2/h3(text)`, `body(text)`, `tableCaption/figCaption(label)`, `threeLineTable(headers, rows, colWidths)`, `ref(text)`, `blank()`. The STYLES / NUMBERING / page constants at the top of the file are the canonical implementation of all specs below; refer to that file for exact docx-js values.
+`scripts/new_doc.js` provides ready-to-use helper functions: `h1/h2/h3(text)`, `body(text)`, `tableCaption/figCaption(label)`, `threeLineTable(headers, rows, colWidths)`, `ref(text)`, `blank()`, and optional `columnSection(children, columnCount, options)` for continuous column layouts. The STYLES / NUMBERING / page constants at the top of the file are the canonical implementation of all specs below; refer to that file for exact docx-js values.
 
 ### Lists (NEVER use unicode bullets)
 
@@ -239,6 +240,127 @@ new Paragraph({ children: [new PageBreak()] })
 // Or use pageBreakBefore
 new Paragraph({ pageBreakBefore: true, children: [new TextRun("New page")] })
 ```
+
+### 双栏论文中的通栏图片＋图题（Word / WPS）
+
+适用于“正文双栏，局部图片与图题横跨两栏，之后恢复双栏”的论文。使用连续分节：**双栏正文 → 单栏图片＋图题 → 双栏正文**。分栏属于节属性；只增大图片宽度不能完成这种布局。这里的“通栏”指正文可用宽度，不包括页边距。
+
+#### Word / WPS 手动操作
+
+1. 显示段落标记，将光标放到准备插图的正文位置，选择【布局／页面布局】→【分隔符】→【分节符（连续）】。
+2. 将光标放在新节内，选择【分栏】→【一栏】。在“更多分栏／应用于”中确保仅作用于目标节或选定区域，避免误改整篇文档；各版本菜单名称可能不同。
+3. 插入图片，优先使用【嵌入型／与文字在一行】并居中。图片宽度不得超过页面宽度减去左右页边距，保持原始宽高比。
+4. 紧接图片添加独立的图题段落，居中、无首行缩进。按论文模板选择“图 1-1”或“Fig. 1”；需要自动编号时使用题注／SEQ 字段。
+5. 图片所在段落设置【与下段同页】；图题设置【段中不分页】，图题本身不要继续绑定后面的正文。图片段落使用单倍或至少值行距，避免固定的小行高裁切图片。
+6. 在图题之后插入第二个【分节符（连续）】，将其后的新节设回【两栏】，恢复原来的栏宽和栏间距。
+
+连续分节不主动要求换页，但不能保证图片一定留在当前页：图片＋图题放不下时会正常移动到后页。图片过高、段落的“段前分页”、脚注或不同的页面尺寸／方向也可能影响结果。双栏节在结束处可能重新平衡两栏文字；这是需要实际预览的排版行为。
+
+#### 使用 `docx` / `scripts/new_doc.js` 生成
+
+模板已提供 `columnSection(children, columnCount, options)`：栏数为 1 或 2，默认栏间距为 360 DXA（18pt），每节沿用模板的 A4 与 2.5cm 页边距，分节类型为 `SectionType.CONTINUOUS`。它是可选布局函数，默认单栏模板不会自动改成双栏。
+
+在复制的 `new_doc.js` 中，用下例替换示例 CONTENT 和文档构建部分；保留模板前面的依赖、样式、编号和辅助函数。`architecture.png` 及原始尺寸必须替换为真实图片。没有单独的导入模块需要安装。
+
+```javascript
+// 正文前后分成不同的数组；章节与布局节互相独立。
+const beforeFigure = [
+  h1Chinese('一、引言'),
+  body('这里是图片之前的双栏正文。'),
+];
+const afterFigure = [body('这里继续双栏正文。')];
+
+// docx 图片尺寸使用像素；DXA / 15 = 96 DPI 下的像素数。
+const sourceWidth = 1600;
+const sourceHeight = 600;
+// 模板导入的 docx.Math 会遮蔽原生 Math，因此显式使用 globalThis.Math。
+const figureWidth = globalThis.Math.min(560, globalThis.Math.floor(CONTENT_W / 15));
+const imageParagraph = new Paragraph({
+  alignment: AlignmentType.CENTER,
+  indent: { firstLine: 0 },
+  spacing: { line: 240, lineRule: LineRuleType.AUTO },
+  keepNext: true,
+  keepLines: true,
+  children: [new ImageRun({
+    type: 'png',
+    data: fs.readFileSync('architecture.png'),
+    transformation: {
+      width: figureWidth,
+      height: figureWidth * sourceHeight / sourceWidth,
+    },
+    altText: { title: '系统架构', description: '系统组件及其连接关系', name: 'architecture' },
+  })],
+});
+const caption = figCaption('Architecture overview', {
+  format: 'continuous', label: 'Fig.',
+});
+const pageFooter = new Footer({ children: [new Paragraph({
+  alignment: AlignmentType.CENTER,
+  indent: { firstLine: 0 },
+  children: [new TextRun({ children: [PageNumber.CURRENT] })],
+})] });
+
+const doc = new Document({
+  styles: STYLES,
+  numbering: NUMBERING,
+  features: { updateFields: true },
+  sections: [
+    columnSection(beforeFigure, 2, { footers: { default: pageFooter } }),
+    columnSection([imageParagraph, caption], 1),
+    columnSection(afterFigure, 2),
+  ],
+});
+// 保留模板原有 Packer.toBuffer(doc) 保存代码。
+```
+
+`figCaption('描述')` 仍生成“图 章-序”；`figCaption('描述', { format: 'continuous', label: 'Fig.' })` 使用共享 `SEQ figure \* ARABIC` 字段生成“Fig. 1、Fig. 2…”（标签与序号间保留空格）。新连续图题通过 `SimpleField` 写入初始编号的缓存显示值，使忽略字段更新的渲染器也能显示数字；正文顺序应与函数调用顺序一致。不要手工写入数字，也不要为每个布局节新建序列或重置序号。在 Word/WPS 中新增、删除或移动图题后更新字段并检查编号；`updateFields` 是更新请求，渲染器是否执行需要验证。
+
+多张通栏图重复单栏图题节与双栏正文节即可，不要重复插入章节标题来切换布局。首页标题／摘要若需单栏，也可用独立的一栏节，但应依据目标期刊模板设置。表格和公式在双栏节内必须按实际栏宽重新计算，不能直接使用本技能其他示例中固定的 9070 DXA 全页宽度；两栏等宽时，单栏宽度为 `(CONTENT_W - columnSpace) / 2`。
+
+#### 编辑现有 DOCX 的 OOXML 规则
+
+按本技能的“解包 → 编辑 → 打包”流程，先定位目标位置所属的原始节及其完整 `w:sectPr`，将该节拆成前正文、图片＋图题、后正文三节：
+
+- 前正文节的 `w:cols` 保留两栏。
+- 图片＋图题节使用 `<w:cols w:num="1" w:space="360" w:equalWidth="1"/>`。
+- 后正文节恢复原始两栏设置；不要强行把不等宽栏转换成等宽栏。
+- 图片＋图题节和后正文节的节属性都包含 `<w:type w:val="continuous"/>`。前正文节保留原始的起节类型，避免改变它如何衔接更前面的内容。
+- **位置与归属**：除文档最后一节外，`w:sectPr` 位于该节最后段落的 `w:pPr` 内；最后一节位于 `w:body` 的末尾。属性描述的是其所在节，而 `w:type` 决定该节如何接续前一节。不要把中间单栏节的属性错放进后正文节，或把每个节都写成 `w:body` 的直接子节点。
+- 三节复制并保持原有纸张尺寸、方向、页边距、段落样式和相关关系。核查原节的页眉页脚引用、首页不同设置、脚注等：保持预期继承关系；已有 `w:pgNumType/@w:start` 只保留在应重启编号的位置，新插入的布局节通常不复制这个重启值。
+- 其他既有节的属性不应被替换。复制带关系的元素必须保留或正确映射 `r:id`；不要重建 `styles.xml`。
+
+图片段落的 `w:pPr` 中加入 `<w:keepNext/>` 和 `<w:keepLines/>`；图题段落加入 `<w:keepLines/>`。保留合法的元素顺序：这些分页控制在 `w:spacing`／`w:ind`／`w:jc` 之前，`w:sectPr` 在 `w:rPr` 之后、`w:pPrChange` 之前（存在时）。用嵌入式 `wp:inline` 引用图片，不用浮动锚点充当分栏实现。
+
+#### 验证与故障定位
+
+1. 校验打包文档的 XML、图片关系与内容类型；检查三个目标节的栏数为 2／1／2，后两节的类型为 continuous，并保留页面设置。
+2. 用 Word/WPS 打开或通过 LibreOffice 转 PDF 检查：图片和图题跨正文全宽，上下正文仍为双栏，页码连续，图题没有单独掉到后页。LibreOffice 渲染只能证明该渲染器的结果，不能代替目标 Word/WPS 版本的验收。
+3. 出现多余换页时，先查是否误用 `PageBreak`／`NEXT_PAGE`，再查 `pageBreakBefore`、图片高度、图题后的 `keepNext` 链及节间的页面设置差异。分栏符只进入下一栏；分页符只换页，均不能代替连续分节切换栏数。
+
+可按下列场景核查修改后的模板；预期不代表所有 Word/WPS 版本都已实测：
+
+| 输入或场景 | 预期结果 |
+|---|---|
+| 运行原来的单栏示例 | 仍为一个单栏节 |
+| 双栏正文中加入一张通栏图及 Fig. 图题 | 栏数 2／1／2；空间充足时同页显示 Fig. 1 |
+| 两张通栏图，中间仍有双栏正文 | 栏数 2／1／2／1／2；图题为 Fig. 1、Fig. 2 |
+| 默认 `figCaption('描述')` | 保留“图 章-序”及章内 SEQ 字段 |
+| `columnSpace: 720` | 两栏间距为 720 DXA |
+| `children` 传入字符串 | 明确抛出 TypeError |
+| 栏数传入 0、3 或非整数 | 明确抛出 RangeError |
+| 栏间距为负数、非整数或不小于正文宽度 | 明确抛出 RangeError |
+| 首节指定页脚，内容跨多页、多节 | 页面尺寸、页边距保留，页码按 1、2…连续 |
+| 页末剩余空间不足，图片带多行图题 | 可容纳于单页的图片＋图题一起移到后页，之后恢复双栏 |
+
+研究依据（2026-10-10 核查）：
+
+- [Microsoft：用分节符修改局部布局，连续分节可改变同页栏数](https://support.microsoft.com/en-us/word/use-section-breaks-to-change-the-layout-or-formatting-in-one-section-of-your-word-document)
+- [Microsoft：插入分节符，含 Windows / Mac 操作](https://support.microsoft.com/en-us/word/insert-a-section-break)
+- [WPS Academy：分栏及栏宽、间距设置](https://www.wps.com/academy/layout-skill-how-can-we-split-columns/1861406/)
+- [Microsoft：段中不分页、与下段同页](https://support.microsoft.com/en-us/word/keep-text-together-in-word)
+- [Microsoft Open XML：SectionProperties 的位置](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.sectionproperties?view=openxml-3.0.1) 与 [SectionType 的含义](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.sectiontype?view=openxml-3.0.1)
+- [docx 9.6.1：节属性接口](https://github.com/dolanmiu/docx/blob/9.6.1/src/file/document/body/section-properties/section-properties.ts)、[栏属性实现](https://github.com/dolanmiu/docx/blob/9.6.1/src/file/document/body/section-properties/properties/columns.ts)、[节尾属性生成](https://github.com/dolanmiu/docx/blob/9.6.1/src/file/document/body/body.ts)
+- [docx 9.6.1：SimpleField 的字段代码与缓存显示值](https://github.com/dolanmiu/docx/blob/9.6.1/src/file/paragraph/run/simple-field.ts)
 
 ### Table of Contents
 
@@ -468,6 +590,7 @@ new Paragraph({
 - **Never use `\n`** - use separate Paragraph elements
 - **Never use unicode bullets** - use `LevelFormat.BULLET` with numbering config
 - **PageBreak must be in Paragraph** - standalone creates invalid XML
+- **双栏正文中的通栏图题** - 用连续分节实现 2 → 1 → 2 栏；图片与图题同处单栏节，图片段落 keepNext，图题 keepLines；见“通栏图片”章节
 - **ImageRun requires `type`** - always specify png/jpg/etc
 - **Heading numbering: per-chapter Word auto-numbering** — H1 uses Chinese numerals in text (一、二、三) via `h1Chinese()`. H2/H3 use Word auto-numbering via per-chapter `sections_c{N}` references generated by `buildNumberingConfig(chapterCount)`. NEVER use `LevelFormat.CHINESE_COUNTING` in a multi-level config. Pass heading text WITHOUT manual number prefixes — Word handles all numbering.
 - **Figure/Table captions: no manual numbers** — use `figCaption('描述')` without "图 3-1 " prefix. SEQ fields generate "图 章-序 描述" automatically. Same for `tableCaption()`. Use `stripCaptionNumber()` to clean markdown input.
